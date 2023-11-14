@@ -9,18 +9,19 @@ import (
 
 	"github.com/emersion/go-imap"
 	"github.com/emersion/go-imap/client"
+	_ "github.com/emersion/go-message/charset"
 	"github.com/emersion/go-message/mail"
 	"github.com/gin-gonic/gin"
+	"github.com/spf13/viper"
 )
 
-// const (
-// 	SERVERADDRESS = "www.example.com"
-// 	USEREMAIL      = "mail@example.com"
-// 	PASSWORD      = "password"
-// )
+var (
+	SERVERADDRESS = viperEnvVariable("OUTLOOK_IMAP_SERVER")
+	USEREMAIL      = viperEnvVariable("OUTLOOK_EMAIL_ADDRESS")
+	PASSWORD      = viperEnvVariable("OUTLOOK_PASSWORD")
+)
 
-
-const MONTH_LIMIT = 12
+var MONTH_LIMIT = viperEnvVariable("MONTH_LIMIT")
 
 type MessageEntry struct {
 	From	string
@@ -39,6 +40,20 @@ type DatabaseEntry struct {
 	LastDate    time.Time
 	// Date    time.Time
 }
+
+func viperEnvVariable(key string) string {
+	viper.SetConfigFile(".env")
+	err := viper.ReadInConfig()
+  
+	if err != nil {
+	  log.Fatalf("Error while reading config file %s", err)
+	}
+	value, ok := viper.Get(key).(string)
+	if !ok {
+	  log.Fatalf("Invalid type assertion")
+	}
+	return value
+  }
 
 func main() {
     router := gin.Default()
@@ -85,7 +100,8 @@ func fetchEmailsHandler(_c *gin.Context) {
 	// 	log.Fatal(err)
 	// }
 	var receivedMessageEntries = processEmails(c, "INBOX", false)
-	var sentMessageEntries = processEmails(c, "[Gmail]/Sent Mail", true)
+	// var sentMessageEntries = processEmails(c, "[Gmail]/Sent Mail", true)
+	var sentMessageEntries = processEmails(c, "Sent", true)
 	var messageEntries []MessageEntry
 	messageEntries = append(messageEntries, sentMessageEntries...)
 	messageEntries = append(messageEntries, receivedMessageEntries...)
@@ -105,7 +121,7 @@ func fetchEmailsHandler(_c *gin.Context) {
 			if entry.To == USEREMAIL {
 				name = entry.FromName
 				receivedEmails++
-			} else if entry.From == USEREMAIL {
+			} else if entry.From == USEREMAIL || entry.isSent {
 				name = entry.ToName
 				sentEmails++
 			} else {
@@ -168,11 +184,11 @@ func processEmails(c *client.Client, mailboxName string, isSent bool) []MessageE
 	items := []imap.FetchItem{section.FetchItem()}
 	messages := make(chan *imap.Message, 10)
 	go func() {
+		log.Println("Fetching " + mailboxName + " messages...")
 		if err := c.Fetch(seqSet, items, messages); err != nil {
 			log.Fatal(err)
 		}
 	}()
-	
 	var messageSlice []*imap.Message
 	for msg := range messages {
 		messageSlice = append(messageSlice, msg)
@@ -182,7 +198,6 @@ func processEmails(c *client.Client, mailboxName string, isSent bool) []MessageE
 	// msg := <-messages
 	for i := len(messageSlice) - 1; i >= 0; i-- {
 		msg := messageSlice[i]
-		log.Println("===========> msg: ", msg)
 
 		if msg == nil {
 			log.Fatal("Server didn't returned message")
@@ -202,24 +217,25 @@ func processEmails(c *client.Client, mailboxName string, isSent bool) []MessageE
 		header := mr.Header
 
 		date, err := header.Date();
-		log.Println("===========> date: ", date)
 		
 		if err != nil {
 			log.Fatal(err)
 		}
 		difference := time.Now().Sub(date)
 		months := difference.Hours() / (24 * 365.25 / 12)
-		if months >= MONTH_LIMIT {
+		month_limit, err := strconv.ParseFloat(MONTH_LIMIT, 64)
+		if err != nil {
+			log.Fatal("Error:", err)
+		}
+		if months >= month_limit {
 			break
 		}
 
 		from, err := header.AddressList("From");
-		log.Println("===========> from: ", from)
 		if err != nil {
 			log.Fatal(err)
 		}
 		to, err := header.AddressList("To");
-		log.Println("===========> to: ", to)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -236,7 +252,6 @@ func processEmails(c *client.Client, mailboxName string, isSent bool) []MessageE
 			ToName:      to[0].Name,
 			isSent:   	 isSent,
 		}
-		log.Println("===========> entry: ", entry)
 
 		messageEntries = append(messageEntries, entry)
 
@@ -278,8 +293,6 @@ func processEmails(c *client.Client, mailboxName string, isSent bool) []MessageE
 		// 	}
 		// }
 	}
-	log.Println("===========> 1 end")
-
 	return messageEntries
 }
 
