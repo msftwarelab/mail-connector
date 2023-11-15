@@ -7,6 +7,7 @@ require (
 	github.com/chenzhuoyu/base64x v0.0.0-20230717121745-296ad89f973d // indirect
 	github.com/chenzhuoyu/iasm v0.9.1 // indirect
 	github.com/emersion/go-imap v1.2.1 // indirect
+	github.com/emersion/go-imap/v2 v2.0.0-alpha.7 // indirect
 	github.com/emersion/go-message v0.17.0 // indirect
 	github.com/emersion/go-sasl v0.0.0-20231106173351-e73c9f7bad43 // indirect
 	github.com/emersion/go-textwrapper v0.0.0-20200911093747-65d896831594 // indirect

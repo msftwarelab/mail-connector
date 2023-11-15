@@ -5,12 +5,12 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
-	"github.com/emersion/go-imap"
-	"github.com/emersion/go-imap/client"
+	"github.com/emersion/go-imap/v2"
+	"github.com/emersion/go-imap/v2/imapclient"
 	_ "github.com/emersion/go-message/charset"
-	"github.com/emersion/go-message/mail"
 	"github.com/gin-gonic/gin"
 	"github.com/spf13/viper"
 )
@@ -56,9 +56,11 @@ func viperEnvVariable(key string) string {
   }
 
 func main() {
-    router := gin.Default()
+    gin.SetMode(gin.ReleaseMode)
+    router := gin.New()
     router.GET("/processEmail", fetchEmailsHandler)
 
+	log.Println("Listening and serving HTTP on localhost:8080")
     router.Run("localhost:8080")
 }
 
@@ -68,18 +70,18 @@ func fetchEmailsHandler(_c *gin.Context) {
 	log.Println("Connecting to server...")
 
 	// Connect to server
-	c, err := client.DialTLS(SERVERADDRESS, nil)
+	c, err := imapclient.DialTLS(SERVERADDRESS, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
 	log.Println("Connected")
 
 	// Don't forget to logout
-	defer c.Logout()
+	defer c.Close()
 
 	// Login
-	if err := c.Login(USEREMAIL, PASSWORD); err != nil {
-		log.Fatal(err)
+	if err := c.Login(USEREMAIL, PASSWORD).Wait(); err != nil {
+		log.Fatalf("failed to login: %v", err)
 	}
 	log.Println("Logged in")
 
@@ -100,8 +102,12 @@ func fetchEmailsHandler(_c *gin.Context) {
 	// 	log.Fatal(err)
 	// }
 	var receivedMessageEntries = processEmails(c, "INBOX", false)
-	// var sentMessageEntries = processEmails(c, "[Gmail]/Sent Mail", true)
-	var sentMessageEntries = processEmails(c, "Sent", true)
+	var sentMessageEntries []MessageEntry
+	if strings.Contains(SERVERADDRESS, "gmail") {
+		sentMessageEntries = processEmails(c, "[Gmail]/Sent Mail", true)
+	} else if strings.Contains(SERVERADDRESS, "outlook") {
+		sentMessageEntries = processEmails(c, "Sent", true)
+	}
 	var messageEntries []MessageEntry
 	messageEntries = append(messageEntries, sentMessageEntries...)
 	messageEntries = append(messageEntries, receivedMessageEntries...)
@@ -167,56 +173,37 @@ func fetchEmailsHandler(_c *gin.Context) {
 	log.Println("Done!")
 }
 
-func processEmails(c *client.Client, mailboxName string, isSent bool) []MessageEntry {
-	mbox, err := c.Select(mailboxName, false)
+func processEmails(c *imapclient.Client, mailboxName string, isSent bool) []MessageEntry {
+	log.Println("Fetching " + mailboxName + " messages...")
+	mbox, err := c.Select(mailboxName, nil).Wait()
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("failed to select INBOX: %v", err)
 	}
-	if mbox.Messages == 0 {
-		log.Fatal("No sent message")
-	}
-
-	seqSet := new(imap.SeqSet)
-	seqSet.AddRange(1, mbox.Messages)
 
 	// Get the whole message body
-	var section imap.BodySectionName
-	items := []imap.FetchItem{section.FetchItem()}
-	messages := make(chan *imap.Message, 10)
-	go func() {
-		log.Println("Fetching " + mailboxName + " messages...")
-		if err := c.Fetch(seqSet, items, messages); err != nil {
-			log.Fatal(err)
-		}
-	}()
-	var messageSlice []*imap.Message
-	for msg := range messages {
-		messageSlice = append(messageSlice, msg)
+	seqSet := imap.SeqSetRange(1, mbox.NumMessages)
+	fetchOptions := &imap.FetchOptions{
+		Flags:    true,
+		Envelope: true,
+		BodySection: []*imap.FetchItemBodySection{
+			{Specifier: imap.PartSpecifierHeader},
+		},
+	}
+	messages, err := c.Fetch(seqSet, fetchOptions).Collect()
+	if err != nil {
+		log.Fatalf("failed to fetch first message in INBOX: %v", err)
 	}
 	var messageEntries []MessageEntry
 
 	// msg := <-messages
-	for i := len(messageSlice) - 1; i >= 0; i-- {
-		msg := messageSlice[i]
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
 
 		if msg == nil {
 			log.Fatal("Server didn't returned message")
 		}
 
-		r := msg.GetBody(&section)
-		if r == nil {
-			log.Fatal("Server didn't returned message body")
-		}
-
-		// Create a new mail reader
-		mr, err := mail.CreateReader(r)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		header := mr.Header
-
-		date, err := header.Date();
+		date := msg.Envelope.Date
 		
 		if err != nil {
 			log.Fatal(err)
@@ -231,11 +218,11 @@ func processEmails(c *client.Client, mailboxName string, isSent bool) []MessageE
 			break
 		}
 
-		from, err := header.AddressList("From");
+		from := msg.Envelope.From
 		if err != nil {
 			log.Fatal(err)
 		}
-		to, err := header.AddressList("To");
+		to := msg.Envelope.To
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -246,13 +233,12 @@ func processEmails(c *client.Client, mailboxName string, isSent bool) []MessageE
 		// }
 		entry := MessageEntry{
 			Date:    	 date,
-			From:    	 from[0].Address,
+			From:    	 from[0].Mailbox + "@" + from[0].Host,
 			FromName:    from[0].Name,
-			To:      	 to[0].Address,
+			To:      	 to[0].Mailbox + "@" + to[0].Host,
 			ToName:      to[0].Name,
 			isSent:   	 isSent,
 		}
-
 		messageEntries = append(messageEntries, entry)
 
 		//TODO: Content part
