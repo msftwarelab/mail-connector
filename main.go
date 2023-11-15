@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"encoding/csv"
+	"fmt"
 	"log"
 	"os"
 	"strconv"
@@ -13,12 +15,6 @@ import (
 	_ "github.com/emersion/go-message/charset"
 	"github.com/gin-gonic/gin"
 	"github.com/spf13/viper"
-)
-
-var (
-	SERVERADDRESS = viperEnvVariable("OUTLOOK_IMAP_SERVER")
-	USEREMAIL      = viperEnvVariable("OUTLOOK_EMAIL_ADDRESS")
-	PASSWORD      = viperEnvVariable("OUTLOOK_PASSWORD")
 )
 
 var MONTH_LIMIT = viperEnvVariable("MONTH_LIMIT")
@@ -65,12 +61,36 @@ func main() {
 }
 
 func fetchEmailsHandler(_c *gin.Context) {
+	var imapserver string
+	var mailPlatform string
+	var useremail string
+	var password string
+	scanner := bufio.NewScanner(os.Stdin)
+	fmt.Print("Enter mail platform (Gmail/Outlook): ")
+	// fmt.Scan(&mailPlatform)
+	scanner.Scan()
+	mailPlatform = scanner.Text()
+
+	if mailPlatform == "Gmail" {
+		imapserver = viperEnvVariable("GMAIL_IMAP_SERVER")
+	} else if mailPlatform == "Outlook" {
+		imapserver = viperEnvVariable("OUTLOOK_IMAP_SERVER")
+	}
+
+	fmt.Print("Enter your email address: ")
+	scanner.Scan()
+	useremail = scanner.Text()
+
+	fmt.Print("Enter your password: ")
+	scanner.Scan()
+	password = scanner.Text()
+	
 	log.Println("Processing emails...")
 
 	log.Println("Connecting to server...")
 
 	// Connect to server
-	c, err := imapclient.DialTLS(SERVERADDRESS, nil)
+	c, err := imapclient.DialTLS(imapserver, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -80,7 +100,7 @@ func fetchEmailsHandler(_c *gin.Context) {
 	defer c.Close()
 
 	// Login
-	if err := c.Login(USEREMAIL, PASSWORD).Wait(); err != nil {
+	if err := c.Login(useremail, password).Wait(); err != nil {
 		log.Fatalf("failed to login: %v", err)
 	}
 	log.Println("Logged in")
@@ -103,9 +123,9 @@ func fetchEmailsHandler(_c *gin.Context) {
 	// }
 	var receivedMessageEntries = processEmails(c, "INBOX", false)
 	var sentMessageEntries []MessageEntry
-	if strings.Contains(SERVERADDRESS, "gmail") {
+	if strings.Contains(imapserver, "gmail") {
 		sentMessageEntries = processEmails(c, "[Gmail]/Sent Mail", true)
-	} else if strings.Contains(SERVERADDRESS, "outlook") {
+	} else if strings.Contains(imapserver, "outlook") {
 		sentMessageEntries = processEmails(c, "Sent", true)
 	}
 	var messageEntries []MessageEntry
@@ -124,10 +144,10 @@ func fetchEmailsHandler(_c *gin.Context) {
 			sentEmails := 0
 			receivedEmails := 0
 			name := ""
-			if entry.To == USEREMAIL {
+			if entry.To == useremail {
 				name = entry.FromName
 				receivedEmails++
-			} else if entry.From == USEREMAIL || entry.isSent {
+			} else if entry.From == useremail || entry.isSent {
 				name = entry.ToName
 				sentEmails++
 			} else {
@@ -146,12 +166,12 @@ func fetchEmailsHandler(_c *gin.Context) {
 		} else {
 			for i := range databaseEntries {
 				if databaseEntries[i].Email == entry.From {
-					if entry.To == USEREMAIL {
+					if entry.To == useremail {
 						databaseEntries[i].ReceivedEmails++
 						if databaseEntries[i].Name == "" {
 							databaseEntries[i].Name = entry.FromName
 						}
-					} else if entry.From == USEREMAIL{
+					} else if entry.From == useremail{
 						databaseEntries[i].SentEmails++
 					} else{
 						databaseEntries[i].ReceivedEmails++
