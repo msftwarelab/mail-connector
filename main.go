@@ -144,13 +144,11 @@ func fetchEmailsHandler(_c *gin.Context) {
 			sentEmails := 0
 			receivedEmails := 0
 			name := ""
-			if entry.To == useremail {
-				name = entry.FromName
-				receivedEmails++
-			} else if entry.From == useremail || entry.isSent {
+			if entry.isSent {
 				name = entry.ToName
 				sentEmails++
 			} else {
+				name = entry.FromName
 				receivedEmails++
 			}
 
@@ -259,6 +257,7 @@ func processEmails(c *imapclient.Client, mailboxName string, isSent bool) []Mess
 			ToName:      to[0].Name,
 			isSent:   	 isSent,
 		}
+
 		messageEntries = append(messageEntries, entry)
 
 		//TODO: Content part
