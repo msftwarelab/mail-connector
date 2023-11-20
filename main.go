@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/csv"
+	"fmt"
+	"io"
 	"log"
 	"os"
 	"regexp"
@@ -13,6 +16,7 @@ import (
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
 	_ "github.com/emersion/go-message/charset"
+	"github.com/emersion/go-message/mail"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/spf13/viper"
 )
@@ -67,33 +71,21 @@ func main() {
 
 // func fetchEmailsHandler(_c *gin.Context) {
 func fetchEmailsHandler() {
-	// var imapserver string
-	// var mailPlatform string
-	// var useremail string
-	// var password string
-	// scanner := bufio.NewScanner(os.Stdin)
-	// fmt.Print("Enter mail platform (Gmail/Outlook): ")
-	// // fmt.Scan(&mailPlatform)
-	// scanner.Scan()
-	// mailPlatform = scanner.Text()
-
-	// if mailPlatform == "Gmail" {
-	// 	imapserver = viperEnvVariable("GMAIL_IMAP_SERVER")
-	// } else if mailPlatform == "Outlook" {
-	// 	imapserver = viperEnvVariable("OUTLOOK_IMAP_SERVER")
-	// }
-
-	// fmt.Print("Enter your email address: ")
-	// scanner.Scan()
-	// useremail = scanner.Text()
-
-	// fmt.Print("Enter your password: ")
-	// scanner.Scan()
-	// password = scanner.Text()
-
 	imapserver := "outlook.office365.com:993"
-	useremail := "miratest123@outlook.com"
-	password := "Mira!Test!123"
+	var useremail string
+	var password string
+	scanner := bufio.NewScanner(os.Stdin)
+
+	fmt.Print("Enter your email address: ")
+	scanner.Scan()
+	useremail = scanner.Text()
+
+	fmt.Print("Enter your password: ")
+	scanner.Scan()
+	password = scanner.Text()
+
+	// useremail := "miratest123@outlook.com"
+	// password := "Mira!Test!123"
 	
 	log.Println("Processing emails...")
 
@@ -112,15 +104,17 @@ func fetchEmailsHandler() {
 	}
 	log.Println("Logged in")
 
-	var receivedMessageEntries = processEmails(c, "INBOX", false)
-	var sentMessageEntries []MessageEntry
-	sentMessageEntries = processEmails(c, "Sent", true)
 	var messageEntries []MessageEntry
-	messageEntries = append(messageEntries, sentMessageEntries...)
-	messageEntries = append(messageEntries, receivedMessageEntries...)
 	var databaseEntries []DatabaseEntry
+	receivedMessageEntries := processEmails(c, "INBOX", false)
+	sentMessageEntries := processEmails(c, "Sent", true)
+	messageEntries = append(messageEntries, receivedMessageEntries...)
+	messageEntries = append(messageEntries, sentMessageEntries...)
 
 	for _, entry := range messageEntries {
+		if(entry.isSent) {
+			entry.From = useremail
+		}
 		email := ""
 		if(entry.isSent) {
 			email = entry.To
@@ -151,7 +145,7 @@ func fetchEmailsHandler() {
 			databaseEntries = append(databaseEntries, databaseEntry)
 		} else {
 			for i := range databaseEntries {
-				if databaseEntries[i].Email == entry.From {
+				if databaseEntries[i].Email == email {
 					if entry.To == useremail {
 						databaseEntries[i].ReceivedEmails++
 						if databaseEntries[i].Name == "" {
@@ -190,55 +184,84 @@ func processEmails(c *imapclient.Client, mailboxName string, isSent bool) []Mess
 	// Get the whole message body
 	seqSet := imap.SeqSetRange(1, mbox.NumMessages)
 	fetchOptions := &imap.FetchOptions{
+		UID: true,
 		Flags:    true,
 		Envelope: true,
 		BodySection: []*imap.FetchItemBodySection{{}},
 	}
-
-	messages, err := c.Fetch(seqSet, fetchOptions).Collect()
-	
-	if err != nil {
-		log.Fatalf("failed to fetch first message in INBOX: %v", err)
-	}
-
-	for i := len(messages) - 1; i >= 0; i-- {
-		msg := messages[i]
+	messages := c.Fetch(seqSet, fetchOptions)
+	for {
+		msg := messages.Next()
 		if msg == nil {
-			log.Fatal("Server didn't returned message")
-		}
-
-		date := msg.Envelope.Date
-		
-		if err != nil {
-			log.Fatal(err)
-		}
-		difference := time.Now().Sub(date)
-		months := difference.Hours() / (24 * 365.25 / 12)
-		month_limit, err := strconv.ParseFloat(MONTH_LIMIT, 64)
-		if err != nil {
-			log.Fatal("Error:", err)
-		}
-		if months >= month_limit {
 			break
 		}
-
-		from := msg.Envelope.From
-		if err != nil {
-			log.Fatal(err)
-		}
-		to := msg.Envelope.To
-		if err != nil {
-			log.Fatal(err)
-		}
-
 		content := ""
+		date := time.Now()
+		from := make([]imap.Address, 0)
+		to := make([]imap.Address, 0)
+		for {
+			item := msg.Next()
+			if item == nil {
+				break
+			}
+			
+			switch item := item.(type) {
+			case imapclient.FetchItemDataEnvelope:
+				date = item.Envelope.Date
+				if err != nil {
+					log.Fatal(err)
+				}
+				difference := time.Now().Sub(date)
+				months := difference.Hours() / (24 * 365.25 / 12)
+				month_limit, err := strconv.ParseFloat(MONTH_LIMIT, 64)
+				if err != nil {
+					log.Fatal("Error:", err)
+				}
+				if months >= month_limit {
+					break
+				}
 
-		var header []byte
-		for _, buf := range msg.BodySection {
-			header = buf
-			header_str := string(header)
-			content = extractContent(header_str)
-			break
+				from = item.Envelope.From
+				if err != nil {
+					log.Fatal(err)
+				}
+				to = item.Envelope.To
+				if err != nil {
+					log.Fatal(err)
+				}
+			case imapclient.FetchItemDataBodySection:
+				mr, err := mail.CreateReader(item.Literal)
+				if err != nil {
+					log.Fatal(err)
+				}
+				for {
+					p, err := mr.NextPart()
+					if err == io.EOF {
+						break
+					} else if err != nil {
+						log.Fatal(err)
+					}
+			
+					switch h := p.Header.(type) {
+					case *mail.InlineHeader:
+						contentType, _, err := h.ContentType()
+						b, _ := io.ReadAll(p.Body)
+						if err != nil {
+							log.Fatal(err)
+						}
+						if contentType == "text/plain" {
+							content = string(b)
+						} else if contentType == "text/html" {
+							if content == "" {
+								content = extractContent(string(b))
+						}
+						}
+					case *mail.AttachmentHeader:
+						filename, _ := h.Filename()
+						log.Printf("Got attachment: %v\n", filename)
+					}
+				}
+			}
 		}
 		profession, company := extractInformation(content)
 
@@ -252,7 +275,6 @@ func processEmails(c *imapclient.Client, mailboxName string, isSent bool) []Mess
 			Company:   company,
 			isSent:   	 isSent,
 		}
-
 		messageEntries = append(messageEntries, entry)
 	}
 	return messageEntries
@@ -316,30 +338,27 @@ func emailExistsInDatabase(email string, entries []DatabaseEntry) bool {
 }
 
 func extractInformation(content string) (string, string) {
-	log.Println("=============> content: ", content)
-	re := regexp.MustCompile(`\s{2,}`)
+	log.Println("==============> content: ", content)
 	apiKey := "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"
 	ctx := context.Background()
 	client := openai.NewClient(apiKey)
 	prompt := `A person by the name of [x] has an email of [y], in one word each, what company do they work at (spell it out fully) and what is their likely profession?
 			   You sent them [x] emails and they responded with [y] email. Categorize the relationship. 
 			   In your response, only respond with "engaged," "sometimes engaged" or "unresponsive" in your response`
-	trimContent := re.ReplaceAllString(content, " ")
-	inputText := prompt + trimContent
+	inputText := prompt + content
 	professionRegex := regexp.MustCompile(`Profession:\s*([^\n]+)`)
 	companyRegex := regexp.MustCompile(`Company:\s*([^\n]+)`)
 
-
 	response, err := client.CreateChatCompletion(ctx,
 		openai.ChatCompletionRequest{
-			Model: openai.GPT3Dot5Turbo,
+			Model: openai.GPT4,
 			Messages: []openai.ChatCompletionMessage{
 				{
 					Role:    openai.ChatMessageRoleUser,
 					Content: inputText,
 				},
 			},
-			MaxTokens: 100,
+			MaxTokens: 150,
 		},
 	)
 	if err != nil {
@@ -347,7 +366,7 @@ func extractInformation(content string) (string, string) {
 	}
 	
 	extractedInfo := response.Choices[0].Message.Content
-	// log.Println("===========> extractedInfo: ", extractedInfo)
+	log.Println("===========> extractedInfo: ", extractedInfo)
 
 	professionMatches := professionRegex.FindStringSubmatch(extractedInfo)
 	companyMatches := companyRegex.FindStringSubmatch(extractedInfo)
