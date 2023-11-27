@@ -20,10 +20,18 @@ import (
 )
 
 var MONTH_LIMIT = viperEnvVariable("MONTH_LIMIT")
-var BASE_VALUE = 0.01
-var SMAL_CONSTANT = 0.01
-var TIME_SPAN = 60
-var WEIGHT_PHYSICAL = 2
+
+var CSVHeader = []string{"Name", "Email", "Company", "Role", "SentEmails", "ReceivedEmails",
+	"Others mentioned", "Total Meetings", "Virtual Meetings",
+	"Physical Meetings", "Frequency of Meetings", "Clients", "Relationship"}
+
+const (
+	BASE_VALUE      = 0.01
+	SMALL_CONSTANT  = 0.01
+	TIME_SPAN       = 60
+	WEIGHT_PHYSICAL = 2
+	CSVFileName     = "messages.csv"
+)
 
 type MessageEntry struct {
 	From             string
@@ -230,7 +238,7 @@ func fetchEmailsHandler() {
 		}
 	}
 
-	log.Println("Extracting profesion and company...")
+	log.Println("Extracting profesion, company, clients and relationship...")
 
 	for i := range databaseEntries {
 		profession, company := extractInformation(databaseEntries[i].Name, databaseEntries[i].Email, databaseEntries[i].SentEmails, databaseEntries[i].ReceivedEmails)
@@ -238,7 +246,7 @@ func fetchEmailsHandler() {
 		databaseEntries[i].Company = company
 		databaseEntries[i].Relationship = float32(
 			((float64(databaseEntries[i].ReceivedEmails) + BASE_VALUE) /
-				(float64(databaseEntries[i].SentEmails) + SMAL_CONSTANT)) *
+				(float64(databaseEntries[i].SentEmails) + SMALL_CONSTANT)) *
 				(float64(databaseEntries[i].PhysicalMeetings)*float64(WEIGHT_PHYSICAL) + float64(databaseEntries[i].VirtualMeetings)) * 100 /
 				float64(TIME_SPAN),
 		)
@@ -558,7 +566,7 @@ func isVirtual(rawInput string) bool {
 	return locations[0] == "" || strings.HasPrefix(locations[0], "http://") || strings.HasPrefix(locations[0], "https://") || strings.HasPrefix(locations[0], "LANGUAGE")
 }
 func exportToCSV(entries []DatabaseEntry) error {
-	file, err := os.Create("messages.csv")
+	file, err := os.Create(CSVFileName)
 	if err != nil {
 		return err
 	}
@@ -567,10 +575,7 @@ func exportToCSV(entries []DatabaseEntry) error {
 	writer := csv.NewWriter(file)
 	defer writer.Flush()
 
-	header := []string{"Name", "Email", "Company", "Role", "SentEmails", "ReceivedEmails",
-		"Others mentioned", "Total Meetings", "Virtual Meetings",
-		"Physical Meetings", "Frequency of Meetings", "Clients", "Relationship"}
-	if err := writer.Write(header); err != nil {
+	if err := writer.Write(CSVHeader); err != nil {
 		return err
 	}
 
