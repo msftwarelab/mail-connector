@@ -20,33 +20,36 @@ import (
 var MONTH_LIMIT = viperEnvVariable("MONTH_LIMIT")
 
 type MessageEntry struct {
-	From	string
-	FromName	string
-	To      string
-	ToName string
-	Profession string
-	Company string
-	Date    time.Time
-	MeetingInfo string
-	Cc []imap.Address
-	isSent bool
-	isMeeting bool
+	From			 string
+	FromName		 string
+	To      		 string
+	ToName 			 string
+	Profession 		 string
+	Company 		 string
+	Date    	 	 time.Time
+	MeetingDate 	 time.Time
+	MeetingInfo 	 string
+	Cc 			 	 []imap.Address
+	isSent 			 bool
+	isMeeting 		 bool
 	isVirtualMeeting bool
 }
 
 type DatabaseEntry struct {
-	Name    string
-	Email      string
-	SentEmails int
-	ReceivedEmails int
-	LastDate    time.Time
-	Profession    string
-	Company    string
-	TotalMeetings int
-	Cc string
-	VirtualMeetings int
-	PhysicalMeetings int
-	Relationship    string
+	Name    	      	 string
+	Email      		  	 string
+	SentEmails 		  	 int
+	ReceivedEmails 	  	 int
+	LastDate    	  	 time.Time
+	Profession    	  	 string
+	Company    		  	 string
+	TotalMeetings 	  	 int
+	Cc 				  	 string
+	VirtualMeetings   	 int
+	PhysicalMeetings  	 int
+	FrequencyMeetings  	 int
+	FrequencyOfMeetings  float32
+	Relationship      	 string
 }
 
 func viperEnvVariable(key string) string {
@@ -142,6 +145,12 @@ func fetchEmailsHandler() {
 			virtualMeetings := 0
 			physicalMeetings := 0
 			name := ""
+			frequencyMeetings := 0
+			daysBetween := int(time.Now().Sub(entry.MeetingDate) / 24 / time.Hour)
+			if daysBetween < 60 {
+				frequencyMeetings = 1
+			}
+			frequencyOfMeetings := float32(frequencyMeetings) / 60
 			if entry.isMeeting {
 				totalMeetings = 1
 				if entry.isVirtualMeeting {
@@ -168,11 +177,18 @@ func fetchEmailsHandler() {
 				Cc:                Cc,
 				VirtualMeetings:   virtualMeetings,
 				PhysicalMeetings:  physicalMeetings,
+				FrequencyMeetings:  frequencyMeetings,
+				FrequencyOfMeetings:  float32(frequencyOfMeetings),
 			}
 			databaseEntries = append(databaseEntries, databaseEntry)
 		} else {
 			for i := range databaseEntries {
 				if databaseEntries[i].Email == email {
+					daysBetween := int(time.Now().Sub(entry.MeetingDate) / 24 / time.Hour)
+					if daysBetween < 60 {
+						databaseEntries[i].FrequencyMeetings++
+						databaseEntries[i].FrequencyOfMeetings = float32(databaseEntries[i].FrequencyMeetings) / 60
+					}
 					for i := range entry.Cc {
 						databaseEntries[i].Cc += entry.Cc[i].Mailbox + "@" + entry.Cc[i].Host + "; "
 					}
@@ -216,7 +232,6 @@ func fetchEmailsHandler() {
 		log.Fatal(err)
 	}
 
-	
 	log.Println("Done!")
 }
 
@@ -253,9 +268,9 @@ func processEmails(c *imapclient.Client, mailboxName string, isSent bool, fileNa
 		isMeeting := false
 		isVirtualMeeting := false
 		date := time.Now()
+		meetingDate := time.Time{}
 		from := make([]imap.Address, 0)
 		to := make([]imap.Address, 0)
-		// fix the next line error		
 		Cc := []imap.Address{}
 		for {
 			item := msg.Next()
@@ -320,14 +335,9 @@ func processEmails(c *imapclient.Client, mailboxName string, isSent bool, fileNa
 								content = extractContent(string(b))
 							}
 						} else if contentType == "text/calendar" {
-							aaa, err := file.WriteString(string(b) + "==================================================================> \n\n")
-							abc, err := extractMeetingDates(string(b))
-							log.Println("=============> abc: ", abc)
+							meetingDate, err = extractMeetingDates(string(b))
 							isMeeting = true
 							isVirtualMeeting = isVirtual(string(b))
-							if err != nil {
-								log.Fatal("Error writing to file:", err, aaa)
-							}
 						}
 					case *mail.AttachmentHeader:
 						filename, _ := h.Filename()
@@ -337,19 +347,17 @@ func processEmails(c *imapclient.Client, mailboxName string, isSent bool, fileNa
 			}
 		}
 
-		// log.Println("================> content: ", content)
-
 		entry := MessageEntry{
-			Date:    	 date,
-			From:    	 from[0].Mailbox + "@" + from[0].Host,
-			FromName:    from[0].Name,
-			To:      	 to[0].Mailbox + "@" + to[0].Host,
-			ToName:      to[0].Name,
-			isSent:   	 isSent,
-			Cc:          Cc,	
-			// MeetingInfo: meetingInfo,
-			isMeeting:   isMeeting,
-			isVirtualMeeting:   isVirtualMeeting,
+			Date:    	 	   date,
+			From:    	 	   from[0].Mailbox + "@" + from[0].Host,
+			FromName:    	   from[0].Name,
+			To:      	 	   to[0].Mailbox + "@" + to[0].Host,
+			ToName:      	   to[0].Name,
+			isSent:   	  	   isSent,
+			Cc:                Cc,
+			MeetingDate:	   meetingDate,
+			isMeeting:    	   isMeeting,
+			isVirtualMeeting:  isVirtualMeeting,
 		}
 		messageEntries = append(messageEntries, entry)
 	}
@@ -467,17 +475,7 @@ func extractCompanyProfession(input string) []string {
 	return match
 }
 
-func extractMeetingInfo(rawInput string) string  {
-	organizerPattern := `ORGANIZER;[^:]+:mailto:([^@]+@[^:]+)`
-	organizerRegrex := regexp.MustCompile(organizerPattern)
-
-	organizer := organizerRegrex.FindStringSubmatch(rawInput)[1]
-	log.Println("=====> organizer: ", organizer)
-
-	return organizer
-}
-
-func extractMeetingDates(input string) ([]time.Time, error) {
+func extractMeetingDates(input string) (time.Time, error) {
 	datePattern := `\bDTSTART;[^\n]*:(\d{8}T\d{6}|\d{8})\b`
 	re := regexp.MustCompile(datePattern)
 	matches := re.FindAllStringSubmatch(input, -1)
@@ -487,13 +485,13 @@ func extractMeetingDates(input string) ([]time.Time, error) {
 			dateStr := match[1]
 			date, err := parseDate(dateStr)
 			if err != nil {
-				return nil, err
+				return time.Time{}, err
 			}
 			meetingDates = append(meetingDates, date)
 		}
 	}
 
-	return meetingDates, nil
+	return meetingDates[0], nil
 }
 
 func parseDate(dateStr string) (time.Time, error) {
@@ -536,7 +534,9 @@ func exportToCSV(entries []DatabaseEntry) error {
 	writer := csv.NewWriter(file)
 	defer writer.Flush()
 
-	header := []string{"Name", "Email", "SentEmails", "ReceivedEmails", "Profession", "Company", "Others mentioned", "Total Meetings", "Virtual Meetings", "Physical Meetings", "Relationship", "LastDate"}
+	header := []string{"Name", "Email", "SentEmails", "ReceivedEmails", "Profession", 
+					   "Company", "Others mentioned", "Total Meetings", "Virtual Meetings", 
+					   "Physical Meetings", "Frequency of Meetings", "Relationship", "LastDate"}
 	if err := writer.Write(header); err != nil {
 		return err
 	}
@@ -553,6 +553,7 @@ func exportToCSV(entries []DatabaseEntry) error {
 			strconv.Itoa(entry.TotalMeetings),
 			strconv.Itoa(entry.VirtualMeetings),
 			strconv.Itoa(entry.PhysicalMeetings),
+			strconv.FormatFloat(float64(entry.FrequencyOfMeetings), 'g', 5, 64),
 			entry.Relationship,
 			entry.LastDate.Format("2006-01-02 15:04:05"),
 		}
