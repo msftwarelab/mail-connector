@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/csv"
 	"io"
 	"log"
@@ -14,65 +15,73 @@ import (
 	"github.com/emersion/go-imap/v2/imapclient"
 	_ "github.com/emersion/go-message/charset"
 	"github.com/emersion/go-message/mail"
+	"github.com/sashabaranov/go-openai"
 	"github.com/spf13/viper"
 )
 
 var MONTH_LIMIT = viperEnvVariable("MONTH_LIMIT")
+var BASE_VALUE = 0.01
+var SMAL_CONSTANT = 0.01
+var TIME_SPAN = 60
+var WEIGHT_PHYSICAL = 2
 
 type MessageEntry struct {
-	From			 string
-	FromName		 string
-	To      		 string
-	ToName 			 string
-	Profession 		 string
-	Company 		 string
-	Date    	 	 time.Time
-	MeetingDate 	 time.Time
-	MeetingInfo 	 string
-	Cc 			 	 []imap.Address
-	isSent 			 bool
-	isMeeting 		 bool
+	From             string
+	FromName         string
+	To               string
+	ToName           string
+	Profession       string
+	Company          string
+	Subject          string
+	Date             time.Time
+	MeetingDate      time.Time
+	MeetingInfo      string
+	Cc               []imap.Address
+	isSent           bool
+	isMeeting        bool
 	isVirtualMeeting bool
 }
 
 type DatabaseEntry struct {
-	Name    	      	 string
-	Email      		  	 string
-	SentEmails 		  	 int
-	ReceivedEmails 	  	 int
-	LastDate    	  	 time.Time
-	Profession    	  	 string
-	Company    		  	 string
-	TotalMeetings 	  	 int
-	Cc 				  	 string
-	VirtualMeetings   	 int
-	PhysicalMeetings  	 int
-	FrequencyMeetings  	 int
-	FrequencyOfMeetings  float32
-	Relationship      	 string
+	Name                string
+	Email               string
+	SentEmails          int
+	ReceivedEmails      int
+	LastDate            time.Time
+	Profession          string
+	Company             string
+	TotalMeetings       int
+	Cc                  string
+	SubjectLines        string
+	Clients             string
+	VirtualMeetings     int
+	PhysicalMeetings    int
+	FrequencyMeetings   int
+	FrequencyOfMeetings float32
+	Relationship        float32
 }
 
 func viperEnvVariable(key string) string {
 	viper.SetConfigFile(".env")
 	err := viper.ReadInConfig()
-  
+
 	if err != nil {
-	  log.Fatalf("Error while reading config file %s", err)
+		log.Fatalf("Error while reading config file %s", err)
 	}
 	value, ok := viper.Get(key).(string)
 	if !ok {
-	  log.Fatalf("Invalid type assertion")
+		log.Fatalf("Invalid type assertion")
 	}
 	return value
-  }
+}
 
 func main() {
-    // gin.SetMode(gin.ReleaseMode)
-    // router := gin.New()
-    // router.GET("/processEmail", fetchEmailsHandler)
+	// gin.SetMode(gin.ReleaseMode)
+	// router := gin.New()
+	// router.GET("/processEmail", fetchEmailsHandler)
 
 	// log.Println("Listening and serving HTTP on localhost:8080")
-    // router.Run("localhost:8080")
+	// router.Run("localhost:8080")
 	fetchEmailsHandler()
 }
 
@@ -96,7 +105,7 @@ func fetchEmailsHandler() {
 
 	// useremail := "acetopcloud@outlook.com"
 	// password := "cloudeast3k"
-	
+
 	log.Println("Processing emails...")
 
 	log.Println("Connecting to server...")
@@ -129,11 +138,11 @@ func fetchEmailsHandler() {
 		for i := range entry.Cc {
 			Cc += entry.Cc[i].Mailbox + "@" + entry.Cc[i].Host + "; "
 		}
-		if(entry.isSent) {
+		if entry.isSent {
 			entry.From = useremail
 		}
 		email := ""
-		if(entry.isSent) {
+		if entry.isSent {
 			email = entry.To
 		} else {
 			email = entry.From
@@ -168,22 +177,24 @@ func fetchEmailsHandler() {
 			}
 
 			databaseEntry := DatabaseEntry{
-				Name:              name,
-				Email:             email,
-				SentEmails:	       sentEmails,
-				ReceivedEmails:	   receivedEmails,
-				LastDate:		   entry.Date,
-				TotalMeetings:     totalMeetings,
-				Cc:                Cc,
-				VirtualMeetings:   virtualMeetings,
-				PhysicalMeetings:  physicalMeetings,
-				FrequencyMeetings:  frequencyMeetings,
-				FrequencyOfMeetings:  float32(frequencyOfMeetings),
+				Name:                name,
+				Email:               email,
+				SentEmails:          sentEmails,
+				ReceivedEmails:      receivedEmails,
+				LastDate:            entry.Date,
+				TotalMeetings:       totalMeetings,
+				Cc:                  Cc,
+				SubjectLines:        entry.Subject,
+				VirtualMeetings:     virtualMeetings,
+				PhysicalMeetings:    physicalMeetings,
+				FrequencyMeetings:   frequencyMeetings,
+				FrequencyOfMeetings: float32(frequencyOfMeetings),
 			}
 			databaseEntries = append(databaseEntries, databaseEntry)
 		} else {
 			for i := range databaseEntries {
 				if databaseEntries[i].Email == email {
+					databaseEntries[i].SubjectLines += "\n" + entry.Subject
 					daysBetween := int(time.Now().Sub(entry.MeetingDate) / 24 / time.Hour)
 					if daysBetween < 60 {
 						databaseEntries[i].FrequencyMeetings++
@@ -205,12 +216,12 @@ func fetchEmailsHandler() {
 						if databaseEntries[i].Name == "" {
 							databaseEntries[i].Name = entry.FromName
 						}
-					} else if entry.From == useremail{
+					} else if entry.From == useremail {
 						databaseEntries[i].SentEmails++
-					} else{
+					} else {
 						databaseEntries[i].ReceivedEmails++
 					}
-	
+
 					if entry.Date.After(databaseEntries[i].LastDate) {
 						databaseEntries[i].LastDate = entry.Date
 					}
@@ -222,10 +233,16 @@ func fetchEmailsHandler() {
 	log.Println("Extracting profesion and company...")
 
 	for i := range databaseEntries {
-		profession, company, relationship := extractInformation(databaseEntries[i].Name, databaseEntries[i].Email, databaseEntries[i].SentEmails, databaseEntries[i].ReceivedEmails)
+		profession, company := extractInformation(databaseEntries[i].Name, databaseEntries[i].Email, databaseEntries[i].SentEmails, databaseEntries[i].ReceivedEmails)
 		databaseEntries[i].Profession = profession
 		databaseEntries[i].Company = company
-		databaseEntries[i].Relationship = relationship
+		databaseEntries[i].Relationship = float32(
+			((float64(databaseEntries[i].ReceivedEmails) + BASE_VALUE) /
+				(float64(databaseEntries[i].SentEmails) + SMAL_CONSTANT)) *
+				(float64(databaseEntries[i].PhysicalMeetings)*float64(WEIGHT_PHYSICAL) + float64(databaseEntries[i].VirtualMeetings)) * 100 /
+				float64(TIME_SPAN),
+		)
+		databaseEntries[i].Clients = extractClient(databaseEntries[i].SubjectLines)
 	}
 
 	if err := exportToCSV(databaseEntries); err != nil {
@@ -242,13 +259,12 @@ func processEmails(c *imapclient.Client, mailboxName string, isSent bool, fileNa
 	if err != nil {
 		log.Fatalf("failed to select INBOX: %v", err)
 	}
-	
-	// Get the whole message body
+
 	seqSet := imap.SeqSetRange(1, mbox.NumMessages)
 	fetchOptions := &imap.FetchOptions{
-		UID: true,
-		Flags:    true,
-		Envelope: true,
+		UID:         true,
+		Flags:       true,
+		Envelope:    true,
 		BodySection: []*imap.FetchItemBodySection{{}},
 	}
 
@@ -257,7 +273,7 @@ func processEmails(c *imapclient.Client, mailboxName string, isSent bool, fileNa
 		log.Fatal("Error creating file: ", err)
 	}
 	defer file.Close()
-	
+
 	messages := c.Fetch(seqSet, fetchOptions)
 	for {
 		msg := messages.Next()
@@ -272,12 +288,13 @@ func processEmails(c *imapclient.Client, mailboxName string, isSent bool, fileNa
 		from := make([]imap.Address, 0)
 		to := make([]imap.Address, 0)
 		Cc := []imap.Address{}
+		subject := ""
 		for {
 			item := msg.Next()
 			if item == nil {
 				break
 			}
-			
+
 			switch item := item.(type) {
 			case imapclient.FetchItemDataEnvelope:
 				date = item.Envelope.Date
@@ -307,6 +324,11 @@ func processEmails(c *imapclient.Client, mailboxName string, isSent bool, fileNa
 				if err != nil {
 					log.Fatal(err)
 				}
+
+				subject = item.Envelope.Subject
+				if err != nil {
+					log.Fatal(err)
+				}
 			case imapclient.FetchItemDataBodySection:
 				mr, err := mail.CreateReader(item.Literal)
 				if err != nil {
@@ -319,7 +341,7 @@ func processEmails(c *imapclient.Client, mailboxName string, isSent bool, fileNa
 					} else if err != nil {
 						log.Fatal(err)
 					}
-			
+
 					switch h := p.Header.(type) {
 					case *mail.InlineHeader:
 						contentType, _, err := h.ContentType()
@@ -327,7 +349,7 @@ func processEmails(c *imapclient.Client, mailboxName string, isSent bool, fileNa
 						if err != nil {
 							log.Fatal(err)
 						}
-						
+
 						if contentType == "text/plain" {
 							content = string(b)
 						} else if contentType == "text/html" {
@@ -348,16 +370,17 @@ func processEmails(c *imapclient.Client, mailboxName string, isSent bool, fileNa
 		}
 
 		entry := MessageEntry{
-			Date:    	 	   date,
-			From:    	 	   from[0].Mailbox + "@" + from[0].Host,
-			FromName:    	   from[0].Name,
-			To:      	 	   to[0].Mailbox + "@" + to[0].Host,
-			ToName:      	   to[0].Name,
-			isSent:   	  	   isSent,
-			Cc:                Cc,
-			MeetingDate:	   meetingDate,
-			isMeeting:    	   isMeeting,
-			isVirtualMeeting:  isVirtualMeeting,
+			Date:             date,
+			From:             from[0].Mailbox + "@" + from[0].Host,
+			FromName:         from[0].Name,
+			To:               to[0].Mailbox + "@" + to[0].Host,
+			ToName:           to[0].Name,
+			Subject:          subject,
+			isSent:           isSent,
+			Cc:               Cc,
+			MeetingDate:      meetingDate,
+			isMeeting:        isMeeting,
+			isVirtualMeeting: isVirtualMeeting,
 		}
 		messageEntries = append(messageEntries, entry)
 	}
@@ -414,59 +437,69 @@ func applyPatterns(input string) string {
 
 func emailExistsInDatabase(email string, entries []DatabaseEntry) bool {
 	for _, obj := range entries {
-        if obj.Email == email {
-            return true
-        }
-    }
-    return false
+		if obj.Email == email {
+			return true
+		}
+	}
+	return false
 }
 
-func extractInformation(name string, email string, sentEmails int, receivedEmails int) (string, string, string) {
-	// apiKey := "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"
-	// ctx := context.Background()
-	// client := openai.NewClient(apiKey)
-	// prompt1 := "A person by the name of " + name + "has an email of " + email + ", in one word each, what company do they work at (spell it out fully) and what is their likely profession? Output format is Profession, Company"
-	// prompt2 := "You sent them " + strconv.Itoa(sentEmails) + "emails and they responded with " + strconv.Itoa(sentEmails) + "email. Categorize the relationship. In your response, only respond with 'engaged,'' 'sometimes engaged' or 'unresponsive' in your response"
+func extractInformation(name string, email string, sentEmails int, receivedEmails int) (string, string) {
+	apiKey := "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"
+	ctx := context.Background()
+	client := openai.NewClient(apiKey)
+	prompt1 := "A person by the name of " + name + "has an email of " + email + ", in one word each, what company do they work at (spell it out fully) and what is their likely profession? Output format is Profession, Company"
 
-	// response1, err := client.CreateChatCompletion(ctx,
-	// 	openai.ChatCompletionRequest{
-	// 		Model: openai.GPT4,
-	// 		Messages: []openai.ChatCompletionMessage{
-	// 			{
-	// 				Role:    openai.ChatMessageRoleUser,
-	// 				Content: prompt1,
-	// 			},
-	// 		},
-	// 		MaxTokens: 150,
-	// 	},
-	// )
-	// if err != nil {
-	// 	log.Fatal("Error generating response from OpenAI:", err)
-	// }
-	
-	// result := response1.Choices[0].Message.Content
-	// match := extractCompanyProfession(result)
-	// profession, company := match[1], match[2]
-	// response2, err := client.CreateChatCompletion(ctx,
-	// 	openai.ChatCompletionRequest{
-	// 		Model: openai.GPT4,
-	// 		Messages: []openai.ChatCompletionMessage{
-	// 			{
-	// 				Role:    openai.ChatMessageRoleUser,
-	// 				Content: prompt2,
-	// 			},
-	// 		},
-	// 		MaxTokens: 150,
-	// 	},
-	// )
-	// if err != nil {
-	// 	log.Fatal("Error generating response from OpenAI:", err)
-	// }
-	
-	// relationship := response2.Choices[0].Message.Content
+	response1, err := client.CreateChatCompletion(ctx,
+		openai.ChatCompletionRequest{
+			Model: openai.GPT4,
+			Messages: []openai.ChatCompletionMessage{
+				{
+					Role:    openai.ChatMessageRoleUser,
+					Content: prompt1,
+				},
+			},
+			MaxTokens: 150,
+		},
+	)
+	if err != nil {
+		log.Fatal("Error generating response from OpenAI:", err)
+	}
 
-	// return profession, company, relationship
-	return "hello", "hi", "good"
+	result := response1.Choices[0].Message.Content
+	match := extractCompanyProfession(result)
+	profession, company := match[1], match[2]
+
+	return profession, company
+}
+
+func extractClient(subject string) string {
+	log.Println("==============> subject: ", subject)
+	apiKey := "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"
+	ctx := context.Background()
+	client := openai.NewClient(apiKey)
+	prompt2 := " I am going to provide you a list of email subject lines from a PR person. I want you to categorize these emails into the clients they are sent on behalf of and the separate campaigns they belong to. In your response, please be concise and only include the clients and campaigns. You don't need to rewrite the subject lines. \n" + subject
+
+	response1, err := client.CreateChatCompletion(ctx,
+		openai.ChatCompletionRequest{
+			Model: openai.GPT4,
+			Messages: []openai.ChatCompletionMessage{
+				{
+					Role:    openai.ChatMessageRoleUser,
+					Content: prompt2,
+				},
+			},
+			MaxTokens: 150,
+		},
+	)
+	if err != nil {
+		log.Fatal("Error generating response from OpenAI:", err)
+	}
+
+	result := response1.Choices[0].Message.Content
+	result = strings.TrimSpace(result)
+	log.Println("==============> result: ", result)
+	return result
 }
 
 func extractCompanyProfession(input string) []string {
@@ -534,9 +567,9 @@ func exportToCSV(entries []DatabaseEntry) error {
 	writer := csv.NewWriter(file)
 	defer writer.Flush()
 
-	header := []string{"Name", "Email", "SentEmails", "ReceivedEmails", "Profession", 
-					   "Company", "Others mentioned", "Total Meetings", "Virtual Meetings", 
-					   "Physical Meetings", "Frequency of Meetings", "Relationship", "LastDate"}
+	header := []string{"Name", "Email", "Company", "Role", "SentEmails", "ReceivedEmails",
+		"Others mentioned", "Total Meetings", "Virtual Meetings",
+		"Physical Meetings", "Frequency of Meetings", "Clients", "Relationship"}
 	if err := writer.Write(header); err != nil {
 		return err
 	}
@@ -545,17 +578,17 @@ func exportToCSV(entries []DatabaseEntry) error {
 		row := []string{
 			entry.Name,
 			entry.Email,
+			entry.Company,
+			entry.Profession,
 			strconv.Itoa(entry.SentEmails),
 			strconv.Itoa(entry.ReceivedEmails),
-			entry.Profession,
-			entry.Company,
 			entry.Cc,
 			strconv.Itoa(entry.TotalMeetings),
 			strconv.Itoa(entry.VirtualMeetings),
 			strconv.Itoa(entry.PhysicalMeetings),
 			strconv.FormatFloat(float64(entry.FrequencyOfMeetings), 'g', 5, 64),
-			entry.Relationship,
-			entry.LastDate.Format("2006-01-02 15:04:05"),
+			entry.Clients,
+			strconv.Itoa(int(entry.Relationship)),
 		}
 		if err := writer.Write(row); err != nil {
 			return err
